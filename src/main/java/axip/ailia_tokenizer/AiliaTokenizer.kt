@@ -48,6 +48,8 @@ class AiliaTokenizer(
         const val AILIA_TOKENIZER_TYPE_LLAMA = 10;
         /** Tokenizer for Gemma models. Requires a SentencePiece model file. */
         const val AILIA_TOKENIZER_TYPE_GEMMA = 11;
+        /** Tokenizer for Qwen2 models with NFC normalization. Requires a vocabulary file and a merge file. */
+        const val AILIA_TOKENIZER_TYPE_QWEN2 = 12;
 
         init {
             System.loadLibrary("ailia_tokenizer")
@@ -71,9 +73,12 @@ class AiliaTokenizer(
      * @param vocabPath Path to the vocabulary file, or null if not required.
      * @param mergePath Path to the merge file, or null if not required.
      * @param dictionaryPath Path to the MeCab dictionary directory, or null if not required.
+     * @param addedTokensPath Path to added_tokens.json (explicit IDs).
+     * @param tokenizerConfigPath Path to tokenizer_config.json or tokenizer.json (special flags).
      */
     fun loadFiles(modelPath: String? = null, vocabPath: String? = null, mergePath: String? = null,
-                  dictionaryPath: String? = null) {
+                  dictionaryPath: String? = null, addedTokensPath: String? = null,
+                  tokenizerConfigPath: String? = null) {
         modelPath?.let {
             val result = openModelFile(tokenizer, modelPath)
             if (result != 0) {
@@ -101,17 +106,41 @@ class AiliaTokenizer(
                 Log.d(tag,"Failed to load dictionary file: $result")
             }
         }
+        addedTokensPath?.let {
+            val result = openAddedTokensFile(it)
+            if (result != 0) Log.d(tag, "Failed to load added tokens: $result")
+        }
+        tokenizerConfigPath?.let {
+            val result = openTokenizerConfigFile(it)
+            if (result != 0) Log.d(tag, "Failed to load tokenizer config: $result")
+        }
+
     }
 
+    /** Loads added token IDs after the vocabulary has been loaded. */
+    fun openAddedTokensFile(path: String): Int = openAddedTokensFile(tokenizer, path)
+
+    /** Loads added-token attributes from tokenizer_config.json or tokenizer.json. */
+    fun openTokenizerConfigFile(path: String): Int = openTokenizerConfigFile(tokenizer, path)
+
+    /** Registers special tokens. Existing IDs are preserved; new IDs follow registration order. */
+    fun addSpecialTokens(tokens: Array<String>): Int = addSpecialTokens(tokenizer, tokens)
+
     /**
-     * Encodes a text into token IDs.
+     * Encodes a text into token IDs. Special tokens are encoded as plain text,
+     * the same as previous releases (equivalent to ailiaTokenizerEncode).
      *
      * @param text Text to tokenize (UTF-8).
      * @return Array of token IDs.
      */
-    fun encode(text: String): IntArray {
-        // First encode the text
-        val encodeResult = encode(tokenizer, text)
+    fun encode(text: String): IntArray = encode(text, splitSpecialTokens = true)
+
+    /** Encodes text keeping registered special tokens (the Hugging Face default). */
+    fun encodeWithSpecialTokens(text: String): IntArray = encode(text, splitSpecialTokens = false)
+
+    /** Encodes text, optionally splitting special tokens into ordinary BPE pieces. */
+    fun encode(text: String, splitSpecialTokens: Boolean): IntArray {
+        val encodeResult = if (splitSpecialTokens) encode(tokenizer, text) else encodeWithSpecialTokens(tokenizer, text)
         if (encodeResult != 0) {
             Log.d(tag,"Failed to encode text: $encodeResult")
         }
@@ -127,6 +156,38 @@ class AiliaTokenizer(
         }
 
         return tokens
+    }
+
+    /**
+     * Decodes token IDs into text, skipping special tokens
+     * (equivalent to ailiaTokenizerDecode).
+     *
+     * @param tokens Token IDs to decode.
+     * @return Decoded text.
+     */
+    fun decode(tokens: IntArray): String {
+        val text = decode(tokenizer, tokens)
+        if (text == null) {
+            Log.d(tag, "Failed to decode tokens")
+            return ""
+        }
+        return text
+    }
+
+    /**
+     * Decodes token IDs into text, keeping special tokens
+     * (equivalent to ailiaTokenizerDecodeWithSpecialTokens).
+     *
+     * @param tokens Token IDs to decode.
+     * @return Decoded text.
+     */
+    fun decodeWithSpecialTokens(tokens: IntArray): String {
+        val text = decodeWithSpecialTokens(tokenizer, tokens)
+        if (text == null) {
+            Log.d(tag, "Failed to decode tokens")
+            return ""
+        }
+        return text
     }
 
     /**
@@ -154,7 +215,13 @@ class AiliaTokenizer(
     private external fun openVocabFile(tokenizer: Long, path: String): Int
     private external fun openMergeFile(tokenizer: Long, path: String): Int
     private external fun openDictionaryFile(tokenizer: Long, path: String): Int
+    private external fun openAddedTokensFile(tokenizer: Long, path: String): Int
+    private external fun openTokenizerConfigFile(tokenizer: Long, path: String): Int
+    private external fun addSpecialTokens(tokenizer: Long, tokens: Array<String>): Int
+    private external fun encodeWithSpecialTokens(tokenizer: Long, text: String): Int
     private external fun encode(tokenizer: Long, text: String): Int
+    private external fun decode(tokenizer: Long, tokens: IntArray): String?
+    private external fun decodeWithSpecialTokens(tokenizer: Long, tokens: IntArray): String?
     private external fun getTokenCount(tokenizer: Long): Int
     private external fun getTokens(tokenizer: Long, tokens: IntArray, count: Int): Int
     private external fun getVocab(tokenizer: Long, token: Int): String
